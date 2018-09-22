@@ -1,0 +1,274 @@
+#!/bin/bash
+
+OPTIND=1
+params=~/.spssh/params.conf
+source $params
+
+# Funtions
+function help {
+echo -e "Simplified parallel ssh v1.0 \n"
+echo "Syntax: spssh [command] \"arguments\""
+echo -e "Commands:\n --gui\n --shutdown\n --reboot\n --update\n --upgrade\n --install package || \"packages\""
+echo -e " --remove  package || \"packages\"\n --autoremove\n --alive --total || --verbose\n --run \"command\"\n --copy \"local remote\""
+echo -e " --rexec script\n --rmdir dirname || \"dirnames\"\n --rm file || \"files\"\n --info\n --top \n --kill pid || process_name"
+echo -e " --chown \"owner file\"\n --chgrp \"group file\"\n "
+}
+
+function shutdown {
+	echo "If a timeout is returned, the command has been executed"
+	parallel-ssh -h $hosts -l $defuser -A -i "shutdown -k now ; sleep 5; shutdown -h now"
+}
+
+function reboot {
+	echo "If a timeout is returned, the command has been executed"
+	parallel-ssh -h $hosts -l $defuser -A -i "shutdown -k now ; sleep 5; shutdown -r now"
+}
+
+function update {
+	parallel-ssh -h $hosts -l $defuser -A "apt-get update"
+}
+
+function upgrade {
+	parallel-ssh -h $hosts -l $defuser -A "apt-get -y upgrade"
+}
+
+function remove {
+	parallel-ssh -h $hosts -l $defuser -A -i "apt-get -y remove $1"
+}
+
+function kill {
+	case $1 in
+    ''|*[!0-9]*) parallel-ssh -h $hosts -l $defuser -A -i "pkill $1" ;;
+    *) parallel-ssh -h $hosts -l $defuser -A -i "kill -9 $1" ;;
+	esac
+}
+
+function autoremove {
+	parallel-ssh -h $hosts -l $defuser -A "apt-get -y autoremove"
+}
+
+function install {
+	parallel-ssh -h $hosts -l $defuser -A -i "apt-get -y install $1"
+}
+
+function run {
+	parallel-ssh -h $hosts -l $defuser -A -i "$1"
+}
+
+function alive {
+	if [ "$1" == "--total" ]; then
+		echo "Total hosts up:" `parallel-ssh -h $hosts -l $defuser -A 'echo ""' | grep -i success | wc -l `
+	elif [ "$1" == "--verbose" ]; then
+		parallel-ssh -h $hosts -l $defuser -A -i 'echo "Host is up"'
+	else
+		help
+	fi
+}
+
+function rexec {
+	echo "You will be asked for your password twice"
+	parallel-scp -h $hosts -l $defuser -A "$1" /tmp/script.sh > /dev/null
+	parallel-ssh -h $hosts -l $defuser -A -i "chmod +x /tmp/script.sh && sh /tmp/script.sh"
+}
+
+function copy {
+	counter=0
+	for i in $1; do
+		if [ $counter -eq 0 ]; then
+			local="$i"
+		else
+			remote="$i"
+		fi
+		counter=$((counter+1))
+	done
+
+	if [ -d "$local" ]; then
+		parallel-scp -r -h $hosts -l $defuser -A "$local" "$remote"
+	else
+		parallel-scp -h $hosts -l $defuser -A "$local" "$remote"
+	fi
+}
+
+function rmdir {
+	parallel-ssh -h $hosts -l $defuser -A -i "rm -r $1"
+}
+
+function rm {
+	parallel-ssh -h $hosts -l $defuser -A -i "rm $1"
+}
+
+function info {
+	parallel-ssh -h $hosts -l $defuser -A -i  'cpu=`grep "cpu " /proc/stat | awk '\''{usage=($2+$4)*100/($2+$4+$5)} END {print usage "%"}'\''` && echo "CPU Usage: " $cpu% \
+											  && mem=`vmstat -s -S M| grep "used memory" | cut -du -f1 ` && echo "Mem Usage: " $mem \
+											  && load=`cat /proc/loadavg`  && echo Load Avg : "" $load'
+}
+
+function topinfo {
+	parallel-ssh -h $hosts -l $defuser -A -i ' count=0; for i in $(cut -d: -f1,3 /etc/passwd | egrep ":[0-9]{4}$" | \
+											   cut -d: -f1); do if [ $count -eq 0 ]; then ps --sort=-pcpu  -u $i | \
+											   head -n6; else	ps --sort=-pcpu  -u $i | sed 1d | head -n5; fi; \
+											   count=$((count+1)) ; done '
+}
+
+function chown {
+	counter=0
+	for i in $1; do
+		if [ $counter -eq 0 ]; then
+			owner="$i"
+		else
+			file="$i"
+		fi
+		counter=$((counter+1))
+	done
+	parallel-ssh -h $hosts -l $defuser -A "chown $owner $file "
+}
+
+function chgrp {
+	counter=0
+	for i in $1; do
+		if [ $counter -eq 0 ]; then
+			group="$i"
+		else
+			file="$i"
+		fi
+		counter=$((counter+1))
+	done
+	parallel-ssh -h $hosts -l $defuser -A "chgrp $group $file "
+}
+
+function gui {
+	showMenu
+
+}
+
+function showMenu {
+
+	while true;
+	do
+		choice=$(zenity --list \
+			--width=270 --height=480\
+	  		--title="Choose the action to execute" \
+  			--column="Available actions"  \
+ 			"Shutdown" "Reboot" "Update" "Upgrade" "Install packages" "Remove packages" "Remove unused dependencies" \
+ 			"Run custom command" "Copy local file" "Execute local script" "Remove directories" "Remove files" \
+	 		"View alive hosts" "Print system info" "Show top processes" "Kill process" "Change file owner" "Change file group" 2> /dev/null)
+	 	if [[ "$choice" == ""  ]]; then
+	 		exit;
+	 	fi
+
+	 	case "$choice" in
+	 		"Shutdown" ) shutdown;;
+			"Reboot" ) reboot;;
+			"Update" ) update;;
+			"Upgrade" ) upgrade ;;
+			"Install packages" )
+				packages=$(zenity --entry \
+				--title="Package installation" \
+				--text="Enter the packages to install" \
+				--entry-text "" 2> /dev/null); install "$packages" ;;
+			"Remove packages" )
+				packages=$(zenity --entry \
+				--title="Package removal" \
+				--text="Enter the packages to remove" \
+				--entry-text "" 2> /dev/null); remove "$packages" ;;
+			"Remove unused dependencies" ) autoremove;;
+			"Run custom command" )
+				cmd=$(zenity --entry \
+				--title="Run custom command" \
+				--text="Enter command to execute" \
+				--entry-text "" 2> /dev/null); run "$cmd" ;;
+			"Copy local file" )
+				local_file=$(zenity --file-selection --title="Select the file to transfer" 2> /dev/null)
+				remote_file=$(zenity --entry \
+				--title="Remote location" \
+				--text="Enter the remove path" \
+				--entry-text "" 2> /dev/null);
+				str="$local_file $remote_file"; copy "$str" ;;
+			"Execute local script" )
+				local_script=$(zenity --file-selection --title="Select the script to execute remotely" 2> /dev/null)
+				rexec "$local_script";;
+			"Remove directories" )
+				rmdirs=$(zenity --entry \
+				--title="Remove directories" \
+				--text="Enter the full path to the directories" \
+				--entry-text "" 2> /dev/null);
+				rmdir "$rmdirs";;
+			"Remove files" )
+				files=$(zenity --entry \
+				--title="Remove files" \
+				--text="Enter the full path to the files" \
+				--entry-text "" 2> /dev/null);
+				rm "$files";;
+			"Print system info" ) info ;;
+			"Show top processes" ) topinfo ;;
+			"Kill process" )
+				process=$(zenity --entry \
+				--title="Kill process" \
+				--text="Enter the process to kill" \
+				--entry-text "" 2> /dev/null);
+				kill "$process";;
+			"Change file owner" )
+				owner=$(zenity --entry \
+				--title="Change ownership of file" \
+				--text="Enter the new file owner" \
+				--entry-text "" 2> /dev/null);
+				files=$(zenity --entry \
+				--title="Change ownership of file" \
+				--text="Enter the full path to the files" \
+				--entry-text "" 2> /dev/null);
+				str="$owner $files"
+				chown "$str";;
+			"Change file group" )
+				group=$(zenity --entry \
+				--title="Change group of file" \
+				--text="Enter the new file group" \
+				--entry-text "" 2> /dev/null);
+				files=$(zenity --entry \
+				--title="Change ownership of file" \
+				--text="Enter the full path to the files" \
+				--entry-text "" 2> /dev/null);
+				str="$group $files"
+				chgrp "$str";;
+			"View alive hosts" ) alive "--verbose";;
+    		* ) break ;;
+		esac
+
+	done
+
+}
+
+# Main body
+if [ $# -eq 0 ]; then
+  help
+  exit
+fi
+
+OPTS=`getopt -o '' --long gui,help,shutdown,reboot,upgrade,update,alive:,autoremove,remove:,install:,run:,rexec:,copy:,rmdir:,rm:,info,kill:,top,chown:,chgrp: -n 'parse-options' -- "$@"`
+eval set -- "$OPTS"
+
+while true; do
+  case "$1" in
+  	--gui ) gui; shift ;;
+    --help )  help; shift ;;
+    --shutdown ) shutdown; shift ;;
+    --reboot ) reboot; shift ;;
+    --upgrade ) upgrade; shift ;;
+    --update ) update; shift ;;
+	--autoremove ) autoremove; shift ;;
+	--remove ) remove $2; shift ;;
+	--alive ) alive $2; shift ;;
+	--run  ) run "${@:2}"; shift ;;
+	--rexec  ) rexec $2; shift ;;
+	--copy ) copy "${@:2}"; shift ;;
+	--info ) info; shift ;;
+	--rmdir ) rmdir "${@:2}"; shift;;
+	--rm ) rm "${@:2}"; shift;;
+	--kill ) kill $2; shift ;;
+	--top ) topinfo ; shift ;;
+	--chown ) chown "${@:2}"; shift ;;
+	--chgrp ) chgrp "${@:2}"; shift ;;
+	--install ) install "${@:2}"; shift ;;
+    -- ) shift; break ;;
+    * ) break ;;
+  esac
+done
