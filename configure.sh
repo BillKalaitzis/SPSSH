@@ -27,7 +27,7 @@ if [ ! -d ~/.spssh ]; then
 	touch $basedir/hosts.txt
 fi
 
-cp params $basedir/params
+cp params.conf $basedir/params.conf
 echo "Installing Simplified pssh under $installdir"
 sudo cp spssh $installdir/spssh
 sudo chmod +x $installdir/spssh && sudo chown $USER:$USER $installdir/spssh
